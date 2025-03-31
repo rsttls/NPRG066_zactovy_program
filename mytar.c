@@ -22,6 +22,7 @@ typedef struct posix_header
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define BLOCKSIZE 512
 typedef unsigned long long ull;
@@ -29,7 +30,10 @@ typedef unsigned long long ull;
 // global variables
 char *archivePath = NULL;
 FILE *archive = NULL;
-char **arg;
+int argc;
+char **argv;
+int hasFilesToFind = 0;
+char **filesToFind;
 
 ull getTarFileSize(posix_header header)
 {
@@ -46,6 +50,31 @@ ull getTarFileSize(posix_header header)
    }
 }
 
+//DONE
+// report single 0 block
+// proper exits values
+
+
+// TODO:
+// supported header files
+// Files not present in the archive are reported to stderr at the end
+// magic field
+
+int isInListed(char *str)
+{
+   if (hasFilesToFind == 0)
+      return 1;
+   for (size_t i = 0; i < argc; i++)
+   {
+      if (filesToFind[i] != NULL)
+         if (strcmp(filesToFind[i], str) == 0)
+         {
+            filesToFind[i] = NULL;
+            return 1;
+         }
+   }
+   return 0;
+}
 
 void list()
 {
@@ -54,7 +83,8 @@ void list()
    {
       if (header.name[0] == 0)
          break;
-      printf("%s\n", header.name);
+      if (isInListed(header.name))
+         printf("%s\n", header.name);
       ull fileSize = getTarFileSize(header);
       ull blocksToSkip = fileSize / BLOCKSIZE;
       if (fileSize % BLOCKSIZE)
@@ -62,7 +92,7 @@ void list()
       if (fseek(archive, blocksToSkip * BLOCKSIZE, SEEK_CUR) != 0)
       {
          printf("fseek fail: maybe unexpected EOF\n");
-         return;
+         exit(2);
       }
    }
 }
@@ -74,34 +104,54 @@ void extract(int verbose)
    {
       if (header.name[0] == 0)
          break;
-      if (verbose == 1)
-         printf("%s\n", header.name);
-      long long fileSize = getTarFileSize(header);
-      long long blocksToRead = fileSize / BLOCKSIZE;
+      ull fileSize = getTarFileSize(header);
 
-      FILE *f = fopen(header.name, "wb");
-      if (f == NULL)
-         return;
+      if (isInListed(header.name))
+      {
+         // extract
+         if (verbose == 1)
+            printf("%s\n", header.name);
+         ull blocksToRead = fileSize / BLOCKSIZE;
+         FILE *f = fopen(header.name, "wb");
+         if (f == NULL)
+            return;
 
-      char dt[BLOCKSIZE];
-      for (long long i = 0; i < blocksToRead; i++)
-      {
-         fread(&dt, BLOCKSIZE, 1, archive);
-         fwrite(&dt, BLOCKSIZE, 1, f);
+         char dt[BLOCKSIZE];
+         for (long long i = 0; i < blocksToRead; i++)
+         {
+            if (fread(&dt, BLOCKSIZE, 1, archive) != 1)
+               exit(2);
+            fwrite(&dt, BLOCKSIZE, 1, f);
+         }
+         if (fileSize % BLOCKSIZE)
+         {
+            if (fread(&dt, BLOCKSIZE, 1, archive) != 1)
+               exit(2);
+            fwrite(&dt, fileSize % BLOCKSIZE, 1, f);
+         }
+         fclose(f);
       }
-      if (fileSize % BLOCKSIZE)
+      else
       {
-         fread(&dt, BLOCKSIZE, 1, archive);
-         fwrite(&dt, fileSize % BLOCKSIZE, 1, f);
+         // skip
+         ull blocksToSkip = fileSize / BLOCKSIZE;
+         if (fileSize % BLOCKSIZE)
+            blocksToSkip++;
+         if (fseek(archive, blocksToSkip * BLOCKSIZE, SEEK_CUR) != 0)
+         {
+            printf("fseek fail: maybe unexpected EOF\n");
+            exit(2);
+         }
       }
-      fclose(f);
    }
 }
 
-int main(int argc, char **argv)
+int main(int a, char **b)
 {
    int f = 0, v = 0, x = 0, t = 0;
-   arg = argv;
+   argv = b;
+   argc = a;
+   filesToFind = malloc(sizeof(char *) * argc);
    // parsing input
    for (int i = 1; i < argc; i++)
    {
@@ -133,13 +183,16 @@ int main(int argc, char **argv)
       }
       else
       {
-         if (archivePath == 0)
+         if (archivePath == NULL)
          {
             archivePath = argv[i];
          }
          else
          {
-            // add to leftovers maybe a vector
+            static int k = 0;
+            hasFilesToFind = 1;
+            filesToFind[k] = argv[i];
+            k++;
          }
       }
    }
@@ -167,5 +220,17 @@ int main(int argc, char **argv)
       list();
    else
       printf("No operation\n");
+
+   for (size_t i = 0; i < argc; i++)
+   {
+      if (filesToFind[i] != NULL)
+         printf("file not found: %s", filesToFind[i]);
+   }
+
+   posix_header h;
+   if(fread(&h, BLOCKSIZE,1,archive) == 0)
+      printf("A lone zero block");
+   
+
    return 0;
 }
