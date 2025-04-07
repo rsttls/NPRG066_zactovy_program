@@ -30,11 +30,16 @@ typedef unsigned long long ull;
 // global variables
 char *archivePath = NULL;
 FILE *archive = NULL;
-int argc;
+long archiveSize;
+ull argc;
 char **argv;
 int hasFilesToFind = 0;
 char **filesToFind;
+int foundFirstZeroBlock = 0;
+int ret = 0;
 
+
+// reports files sizes
 ull getTarFileSize(posix_header header)
 {
    if ((header.size[0] & 0x80) == 0)
@@ -50,18 +55,12 @@ ull getTarFileSize(posix_header header)
    }
 }
 
-//DONE
-// report single 0 block
-// proper exits values
 
-
-// TODO:
-// supported header files
-// Files not present in the archive are reported to stderr at the end
-// magic field
-
+// checks if file is in listed and if non are listed than always true
 int isInListed(char *str)
 {
+   if (str == NULL)
+      return 2;
    if (hasFilesToFind == 0)
       return 1;
    for (size_t i = 0; i < argc; i++)
@@ -81,17 +80,35 @@ void list()
    posix_header header;
    while (fread(&header, BLOCKSIZE, 1, archive) == 1)
    {
+
       if (header.name[0] == 0)
+      {
+         foundFirstZeroBlock = 1;
          break;
+      }
+      // checks for specification
+      if (memcmp(header.magic, "ustar", 5) != 0)
+      {
+         fprintf(stderr, "mytar: This does not look like a tar archive\nmytar: Exiting with failure status due to previous errors");
+         exit(2);
+      }
+      // check type
+      if(header.typeflag != 0 && header.typeflag != '0')
+      {
+         fprintf(stderr, "mytar: Unsupported header type: %d\n", header.typeflag);
+         exit(2);
+      }
+      // listing
       if (isInListed(header.name))
          printf("%s\n", header.name);
       ull fileSize = getTarFileSize(header);
       ull blocksToSkip = fileSize / BLOCKSIZE;
       if (fileSize % BLOCKSIZE)
          blocksToSkip++;
-      if (fseek(archive, blocksToSkip * BLOCKSIZE, SEEK_CUR) != 0)
+      fseek(archive, blocksToSkip * BLOCKSIZE, SEEK_CUR);
+      if (ftell(archive) > archiveSize)
       {
-         printf("fseek fail: maybe unexpected EOF\n");
+         fprintf(stderr, "mytar: Unexpected EOF in archive\nmytar: Error is not recoverable: exiting now\n");
          exit(2);
       }
    }
@@ -103,7 +120,22 @@ void extract(int verbose)
    while (fread(&header, BLOCKSIZE, 1, archive) == 1)
    {
       if (header.name[0] == 0)
+      {
+         foundFirstZeroBlock = 1;
          break;
+      }
+      // checks for specification
+      if (memcmp(header.magic, "ustar", 5) != 0)
+      {
+         fprintf(stderr, "mytar: This does not look like a tar archive\nmytar: Exiting with failure status due to previous errors");
+         exit(2);
+      }
+      // check type
+      if(header.typeflag != 0 && header.typeflag != '0')
+      {
+         fprintf(stderr, "IDK some errrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\n");
+         exit(2);
+      }
       ull fileSize = getTarFileSize(header);
 
       if (isInListed(header.name))
@@ -117,16 +149,22 @@ void extract(int verbose)
             return;
 
          char dt[BLOCKSIZE];
-         for (long long i = 0; i < blocksToRead; i++)
+         for (ull i = 0; i < blocksToRead; i++)
          {
             if (fread(&dt, BLOCKSIZE, 1, archive) != 1)
+            {
+               fprintf(stderr, "mytar: Unexpected EOF in archive\nmytar: Error is not recoverable: exiting now\n");
                exit(2);
+            }
             fwrite(&dt, BLOCKSIZE, 1, f);
          }
          if (fileSize % BLOCKSIZE)
          {
             if (fread(&dt, BLOCKSIZE, 1, archive) != 1)
+            {
+               fprintf(stderr, "mytar: Unexpected EOF in archive\nmytar: Error is not recoverable: exiting now\n");
                exit(2);
+            }
             fwrite(&dt, fileSize % BLOCKSIZE, 1, f);
          }
          fclose(f);
@@ -137,9 +175,10 @@ void extract(int verbose)
          ull blocksToSkip = fileSize / BLOCKSIZE;
          if (fileSize % BLOCKSIZE)
             blocksToSkip++;
-         if (fseek(archive, blocksToSkip * BLOCKSIZE, SEEK_CUR) != 0)
+         fseek(archive, blocksToSkip * BLOCKSIZE, SEEK_CUR);
+         if (ftell(archive) > archiveSize)
          {
-            printf("fseek fail: maybe unexpected EOF\n");
+            fprintf(stderr, "mytar: Unexpected EOF in archive\nmytar: Error is not recoverable: exiting now\n");
             exit(2);
          }
       }
@@ -153,7 +192,7 @@ int main(int a, char **b)
    argc = a;
    filesToFind = malloc(sizeof(char *) * argc);
    // parsing input
-   for (int i = 1; i < argc; i++)
+   for (ull i = 1; i < argc; i++)
    {
       if (argv[i][0] == '-')
       {
@@ -175,7 +214,7 @@ int main(int a, char **b)
                t = 1;
                break;
             default:
-               printf("Unknown option -%c", argv[i][j]);
+               fprintf(stderr, "Unknown option -%c\n", argv[i][j]);
                break;
             }
             j++;
@@ -201,15 +240,18 @@ int main(int a, char **b)
 
       if (archivePath == NULL)
       {
-         printf("No archive specified\n");
-         return 0;
+         fprintf(stderr, "No archive specified\n");
+         return 2;
       }
       archive = fopen(archivePath, "rb");
       if (archive == NULL)
       {
-         printf("Archive does not exist\n");
-         return 0;
+         fprintf(stderr, "Archive does not exist\n");
+         return 2;
       }
+      fseek(archive,0,SEEK_END);
+      archiveSize = ftell(archive);
+      fseek(archive,0,SEEK_SET);
    }
    if (x)
       if (v)
@@ -219,18 +261,25 @@ int main(int a, char **b)
    else if (t)
       list();
    else
-      printf("No operation\n");
+      exit(2);
 
+   // single zero block
+   posix_header h;
+   if (fread(&h, BLOCKSIZE, 1, archive) == 0 && foundFirstZeroBlock)
+      fprintf(stderr, "mytar: A lone zero block at %ld\n", ftell(archive) / 512);
+
+   // missing files
    for (size_t i = 0; i < argc; i++)
    {
       if (filesToFind[i] != NULL)
-         printf("file not found: %s", filesToFind[i]);
+      {
+         fprintf(stderr, "mytar: %s: Not found in archive\n", filesToFind[i]);
+         ret = 2;
+      }
    }
 
-   posix_header h;
-   if(fread(&h, BLOCKSIZE,1,archive) == 0)
-      printf("A lone zero block");
-   
-
-   return 0;
+   free(filesToFind);
+   if(ret != 0)
+      fprintf(stderr,"mytar: Exiting with failure status due to previous errors\n");
+   return ret;
 }
